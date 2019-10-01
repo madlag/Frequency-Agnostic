@@ -8,6 +8,9 @@ import torch.nn.functional as F
 import data
 import model
 from torch.autograd import Variable
+import custom_embedder
+from torch.utils.tensorboard import SummaryWriter
+import radam
 
 from utils import batchify, get_batch, repackage_hidden
 
@@ -16,6 +19,10 @@ parser.add_argument('--data', type=str, default='data/penn/',
                     help='location of the data corpus')
 parser.add_argument('--model', type=str, default='LSTM',
                     help='type of recurrent net (LSTM, QRNN, GRU)')
+parser.add_argument('--embedder', type=str, default='classic',
+                    help='type of embedder (classic, letter)')
+parser.add_argument('--embedder_lambda', type=float,  default=0.1,
+                    help='embedder loss contribution')
 parser.add_argument('--emsize', type=int, default=400,
                     help='size of word embeddings')
 parser.add_argument('--nhid', type=int, default=1150,
@@ -90,8 +97,8 @@ parser.add_argument('--adv_wdecay', type=float,  default=1.2e-6,
                     help='adv weight decay')
 parser.add_argument('--start', type=int,  default=1,
                     help='start epoch')
+parser.add_argument('--no-tied',  action='store_true', help='tie encoder and decoder')
 args = parser.parse_args()
-args.tied = True
 
 # Set the random seed manually for reproducibility.
 np.random.seed(args.seed)
@@ -142,17 +149,30 @@ criterion = None
 ntokens = len(corpus.dictionary)
 if args.adv:
    rate = (ntokens - args.adv_bias) * 1.0 / ntokens
-   adv_criterion = nn.CrossEntropyLoss(weight=torch.Tensor([rate, 1 - rate]).cuda())
-   adv_hidden = nn.Linear(args.emsize, 2).cuda()
-   adv_targets = torch.LongTensor(np.array([0] * args.adv_bias + [1] * (ntokens - args.adv_bias))).cuda()
+
+   adv_criterion = nn.CrossEntropyLoss(weight=torch.Tensor([rate, 1 - rate]))
+   adv_hidden = nn.Linear(args.emsize, 2)
+   adv_targets = torch.LongTensor(np.array([0] * args.adv_bias + [1] * (ntokens - args.adv_bias)))
+
+   if args.cuda :
+       adv_criterion = adv_criterion.cuda()
+       adv_hidden = adv_hidden.cuda()
+       adv_targets = adv_targets.cuda()
+
    adv_targets = Variable(adv_targets)
    adv_hidden.weight.data.uniform_(-0.1, 0.1)
 ntokens = len(corpus.dictionary)
-model = model.RNNModel(args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.dropouth, args.dropouti, args.dropoute, args.wdrop, args.tied)
+if args.embedder == "classic":
+    embedder = nn.Embedding(ntokens, args.emsize)
+elif args.embedder == "letter":
+    embedder = custom_embedder.CustomEmbedder(corpus.dictionary, args.emsize)
+model = model.RNNModel(embedder,
+                       args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.dropouth, args.dropouti, args.dropoute, args.wdrop, tie_weights = not args.no_tied)
 ###
 if args.resume:
     print('Resuming model ...')
     model_load(args.resume)
+    embedder = model.encoder
     optimizer.param_groups[0]['lr'] = args.lr
     model.dropouti, model.dropouth, model.dropout, args.dropoute = args.dropouti, args.dropouth, args.dropout, args.dropoute
     if args.wdrop:
@@ -188,19 +208,36 @@ print('Model total parameters:', total_params)
 # Training code
 ###############################################################################
 
-def evaluate(data_source, batch_size=10):
+def evaluate(data_source, batch_size=10, valid_or_test = "valid"):
     # Turn on evaluation mode which disables dropout.
     model.eval()
     if args.model == 'QRNN': model.reset()
     total_loss = 0
+    total_embedding_loss = 0.0
     ntokens = len(corpus.dictionary)
     hidden = model.init_hidden(batch_size)
+
     for i in range(0, data_source.size(0) - 1, args.bptt):
         data, targets = get_batch(data_source, i, args, evaluation=True)
         output, hidden = model(data, hidden)
-        total_loss += len(data) * criterion(model.decoder.weight, model.decoder.bias, output, targets).item()
+        loss = len(data) * criterion(model.decoder.weight, model.decoder.bias, output, targets).item()
+        total_loss += loss
+        total_embedding_loss += len(data) * float(embedder.last_batch_loss().cpu().detach().item())
+
         hidden = repackage_hidden(hidden)
-    return total_loss / len(data_source)
+
+        if valid_or_test == "valid":
+            name = "valid"
+        else:
+            name = "test"
+
+
+    ret = total_loss / len(data_source)
+
+    writer.add_scalar('Loss/%s/main' % name, ret / math.log(2))
+    writer.add_scalar('Loss/%s/embedder' % name, total_embedding_loss / len(data_source) / math.log(2))
+
+    return ret
 
 
 def train(epoch):
@@ -266,8 +303,18 @@ def train(epoch):
             adv_h = adv_hidden(model.encoder.weight[args.adv_bias:])
             adv_loss = adv_criterion(adv_h, adv_targets[args.adv_bias:])
             loss = raw_loss - args.adv_lambda * adv_loss
+            writer.add_scalar('Loss/train/adv', adv_loss / math.log(2))
         else:
             loss = raw_loss
+
+        writer.add_scalar('Loss/train/main', raw_loss / math.log(2))
+
+        embedder_loss = embedder.last_batch_loss()
+
+        writer.add_scalar('Loss/train/embedder', embedder_loss / math.log(2))
+
+        loss += embedder_loss * args.embedder_lambda
+
         #loss = raw_loss
         # Activiation Regularization
         if args.alpha: loss = loss + sum(args.alpha * dropped_rnn_h.pow(2).mean() for dropped_rnn_h in dropped_rnn_hs[-1:])
@@ -285,14 +332,16 @@ def train(epoch):
             cur_loss = total_loss.item() / args.log_interval
             elapsed = time.time() - start_time
             print('| epoch {:3d} | {:5d}/{:5d} batches | lr {:05.5f} | ms/batch {:5.2f} | '
-                    'loss {:5.2f} | ppl {:8.2f} | bpc {:8.3f}'.format(
+                    'loss {:5.2f} | ppl {:8.2f} | bpc {:8.3f} | embed_loss {:8.3f}'.format(
                 epoch, batch, len(train_data) // args.bptt, optimizer.param_groups[0]['lr'],
-                elapsed * 1000 / args.log_interval, cur_loss, math.exp(cur_loss), cur_loss / math.log(2)))
+                elapsed * 1000 / args.log_interval, cur_loss, math.exp(cur_loss), cur_loss / math.log(2), embedder_loss / math.log(2)))
             total_loss = 0
             start_time = time.time()
         ###
         batch += 1
         i += seq_len
+
+
         #if i >= 30 and i <= 150:
             #import pickle
             #with open('hiddens', 'wb') as f:
@@ -304,17 +353,22 @@ lr = args.lr
 best_val_loss = []
 stored_loss = 100000000
 finetune = False
+
+
+writer = SummaryWriter()
+
 # At any point you can hit Ctrl + C to break out of training early.
 try:
     optimizer = None
     if args.adv:
+        print("ADVERSARIAL")
         adv_optimizer = torch.optim.SGD(adv_hidden.parameters(), lr=args.adv_lr, weight_decay=args.adv_wdecay)
     #optimizer = torch.optim.ASGD(model.parameters(), lr=args.lr, t0=0, lambd=0., weight_decay=args.wdecay)
     # Ensure the optimizer is optimizing params, which includes both the model's weights as well as the criterion's weight (i.e. Adaptive Softmax)
     if args.optimizer == 'sgd':
         optimizer = torch.optim.SGD(params, lr=args.lr, weight_decay=args.wdecay)
     if args.optimizer == 'adam':
-        optimizer = torch.optim.Adam(params, lr=args.lr, weight_decay=args.wdecay)
+        optimizer = radam.RAdam(params, lr=args.lr, weight_decay=args.wdecay)
 
     print("MAX EPOCH = ", args.epochs + 1)
     for epoch in range(args.start, args.epochs+1):
@@ -337,7 +391,7 @@ try:
             print('-' * 89)
 
             if epoch % 30 == 0:
-                test_loss = evaluate(test_data, test_batch_size)
+                test_loss = evaluate(test_data, test_batch_size, valid_or_test = "test")
                 print('| end of epoch {:3d} | time: {:5.2f}s | test loss {:5.2f} | '
                       'test ppl {:8.2f} | test bpc {:8.3f}'.format(
                    epoch, (time.time() - epoch_start_time), test_loss, math.exp(test_loss), test_loss / math.log(2)))
@@ -378,7 +432,7 @@ try:
                 stored_loss = val_loss
 
             if epoch % 30 == 0:
-                test_loss = evaluate(test_data, test_batch_size)
+                test_loss = evaluate(test_data, test_batch_size, "test")
                 print('| end of epoch {:3d} | time: {:5.2f}s | test loss {:5.2f} | '
                       'test ppl {:8.2f} | test bpc {:8.3f}'.format(
                    epoch, (time.time() - epoch_start_time), test_loss, math.exp(test_loss), test_loss / math.log(2)))
@@ -408,7 +462,7 @@ except Exception as e:
 model_load(args.save)
 
 # Run on test data.
-test_loss = evaluate(test_data, test_batch_size)
+test_loss = evaluate(test_data, test_batch_size, "test")
 print('=' * 89)
 print('| End of training | test loss {:5.2f} | test ppl {:8.2f} | test bpc {:8.3f}'.format(
     test_loss, math.exp(test_loss), test_loss / math.log(2)))

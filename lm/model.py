@@ -8,13 +8,13 @@ from weight_drop import WeightDrop
 class RNNModel(nn.Module):
     """Container module with an encoder, a recurrent module, and a decoder."""
 
-    def __init__(self, rnn_type, ntoken, ninp, nhid, nlayers, dropout=0.5, dropouth=0.5, dropouti=0.5, dropoute=0.1, wdrop=0, tie_weights=False):
+    def __init__(self, encoder, rnn_type, ntoken, ninp, nhid, nlayers, dropout=0.5, dropouth=0.5, dropouti=0.5, dropoute=0.1, wdrop=0, tie_weights=False):
         super(RNNModel, self).__init__()
         self.lockdrop = LockedDropout()
         self.idrop = nn.Dropout(dropouti)
         self.hdrop = nn.Dropout(dropouth)
         self.drop = nn.Dropout(dropout)
-        self.encoder = nn.Embedding(ntoken, ninp)
+        self.encoder = encoder
         self.use_dropout = True
         assert rnn_type in ['LSTM', 'QRNN', 'GRU'], 'RNN type is not supported'
         if rnn_type == 'LSTM':
@@ -62,14 +62,22 @@ class RNNModel(nn.Module):
 
     def init_weights(self):
         initrange = 0.1
-        self.encoder.weight.data.uniform_(-initrange, initrange)
+        if hasattr(self.encoder, "weight"):
+            self.encoder.weight.data.uniform_(-initrange, initrange)
         self.decoder.bias.data.fill_(0)
         self.decoder.weight.data.uniform_(-initrange, initrange)
 
     def forward(self, input, hidden, return_h=False):
-        emb, sigma = embedded_dropout(self.encoder, None, input,
-                                      dropout=self.dropoute if self.training else 0,
-                                      is_training=self.training)
+        old_code = False
+        if old_code:
+            emb, sigma = embedded_dropout(self.encoder, None, input,
+                                          dropout=self.dropoute if self.training else 0,
+                                          is_training=self.training)
+        else:
+            X = self.encoder(input)
+            emb, sigma = embedded_dropout(X, None,
+                                          dropout=self.dropoute if self.training else 0,
+                                          is_training=self.training)
         if self.training:
             m = torch.distributions.normal.Normal(torch.zeros_like(sigma), torch.ones_like(sigma) * 1)
             sigma = m.sample() * 0.2
