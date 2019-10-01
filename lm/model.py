@@ -67,7 +67,7 @@ class RNNModel(nn.Module):
         self.decoder.weight.data.uniform_(-initrange, initrange)
 
     def forward(self, input, hidden, return_h=False):
-        emb, sigma = embedded_dropout(self.encoder, torch.ones_like(self.encoder.weight), input,
+        emb, sigma = embedded_dropout(self.encoder, None, input,
                                       dropout=self.dropoute if self.training else 0,
                                       is_training=self.training)
         if self.training:
