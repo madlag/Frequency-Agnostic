@@ -82,13 +82,14 @@ parser.add_argument('--adv', action='store_false',
                     help='using adversarial regularization')
 parser.add_argument('--adv_bias', type=int, default=1000,
                     help='threshold for rare and popular words')
-parser.add_argument('--adv_lambda', type=int, default=0.02,
+parser.add_argument('--adv_lambda', type=float, default=0.02,
                     help='lambda')
 parser.add_argument('--adv_lr', type=float,  default=0.02,
                     help='adv learning rate')
 parser.add_argument('--adv_wdecay', type=float,  default=1.2e-6,
                     help='adv weight decay')
-
+parser.add_argument('--start', type=int,  default=1,
+                    help='start epoch')
 args = parser.parse_args()
 args.tied = True
 
@@ -116,14 +117,14 @@ def model_load(fn):
 
 import os
 import hashlib
-#fn = 'corpus.{}.data'.format(hashlib.md5(args.data.encode()).hexdigest())
-#if os.path.exists(fn):
-#    print('Loading cached dataset...')
-#    corpus = torch.load(fn)
-#else:
-print('Producing dataset...')
-corpus = data.Corpus(args.data)
-#torch.save(corpus, fn)
+fn = 'corpus.{}.data'.format(hashlib.md5(args.data.encode()).hexdigest())
+if os.path.exists(fn):
+    print('Loading cached dataset...')
+    corpus = torch.load(fn)
+else:
+    print('Producing dataset...')
+    corpus = data.Corpus(args.data)
+    torch.save(corpus, fn)
 
 eval_batch_size = 10
 test_batch_size = 1
@@ -197,9 +198,9 @@ def evaluate(data_source, batch_size=10):
     for i in range(0, data_source.size(0) - 1, args.bptt):
         data, targets = get_batch(data_source, i, args, evaluation=True)
         output, hidden = model(data, hidden)
-        total_loss += len(data) * criterion(model.decoder.weight, model.decoder.bias, output, targets)[0].data
+        total_loss += len(data) * criterion(model.decoder.weight, model.decoder.bias, output, targets).item()
         hidden = repackage_hidden(hidden)
-    return total_loss.item() / len(data_source)
+    return total_loss / len(data_source)
 
 
 def train(epoch):
@@ -314,13 +315,16 @@ try:
         optimizer = torch.optim.SGD(params, lr=args.lr, weight_decay=args.wdecay)
     if args.optimizer == 'adam':
         optimizer = torch.optim.Adam(params, lr=args.lr, weight_decay=args.wdecay)
-    for epoch in range(1, args.epochs+1):
+
+    print("MAX EPOCH = ", args.epochs + 1)
+    for epoch in range(args.start, args.epochs+1):
         epoch_start_time = time.time()
         train(epoch)
+        print("TRAIN FINISHED")
         if 't0' in optimizer.param_groups[0]:
             tmp = {}
-            for prm in model.parameters():
-                tmp[prm] = prm.data.clone()
+            for param_name, prm in model.named_parameters():
+                tmp[param_name] = prm.data.clone()
                 try:
                     prm.data = optimizer.state[prm]['ax'].clone()
                 except:
@@ -344,8 +348,11 @@ try:
                 print('Saving Averaged!')
                 stored_loss = val_loss2
 
-            for prm in model.parameters():
-                prm.data = tmp[prm].clone()
+            for param_name, prm in model.named_parameters():pre
+                if param_name in tmp:
+                    prm = tmp[param_name].clone()
+                else:
+                    print("param %s not in tmp" % param_name)
             
             #if epoch == 1800:
             #    finetune = True
@@ -391,8 +398,11 @@ try:
             best_val_loss.append(val_loss)
 
 except KeyboardInterrupt:
+    raise
     print('-' * 89)
     print('Exiting from training early')
+except Exception as e:
+    raise
 
 # Load the best saved model.
 model_load(args.save)
