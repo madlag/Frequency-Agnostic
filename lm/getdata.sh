@@ -6,21 +6,21 @@ cd data
 echo "- Downloading Penn Treebank (PTB)"
 mkdir -p penn
 cd penn
-wget --quiet --continue http://www.fit.vutbr.cz/~imikolov/rnnlm/simple-examples.tgz
-tar -xzf simple-examples.tgz
-mv simple-examples/data/ptb.train.txt train.txt
-mv simple-examples/data/ptb.test.txt test.txt
-mv simple-examples/data/ptb.valid.txt valid.txt
-rm -rf simple-examples.tgz
-rm -rf simple-examples/
+#wget --quiet --continue http://www.fit.vutbr.cz/~imikolov/rnnlm/simple-examples.tgz
+#tar -xzf simple-examples.tgz
+#mv simple-examples/data/ptb.train.txt train.txt
+#mv simple-examples/data/ptb.test.txt test.txt
+#mv simple-examples/data/ptb.valid.txt valid.txt
+#rm -rf simple-examples.tgz
+#rm -rf simple-examples/
 cd ..
 
 echo "- Downloading text8"
 mkdir -p text8
 cd text8
-wget --quiet --continue http://mattmahoney.net/dc/text8.zip
-tar -xzf text8.zip
-mv text8 train.txt
+#wget --quiet --continue http://mattmahoney.net/dc/text8.zip
+#unzip text8.zip
+#mv text8 train.txt
 #mv test.txt test.txt
 #mv valid.txt valid.txt
 cd ..

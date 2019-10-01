@@ -348,7 +348,7 @@ try:
                 print('Saving Averaged!')
                 stored_loss = val_loss2
 
-            for param_name, prm in model.named_parameters()
+            for param_name, prm in model.named_parameters():
                 if param_name in tmp:
                     prm = tmp[param_name].clone()
                 else:
