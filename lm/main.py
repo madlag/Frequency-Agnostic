@@ -8,7 +8,7 @@ import torch.nn.functional as F
 import data
 import model
 from torch.autograd import Variable
-import custom_embedder
+
 from torch.utils.tensorboard import SummaryWriter
 import radam
 
@@ -165,7 +165,8 @@ ntokens = len(corpus.dictionary)
 if args.embedder == "classic":
     embedder = nn.Embedding(ntokens, args.emsize)
 elif args.embedder == "letter":
-    embedder = custom_embedder.CustomEmbedder(corpus.dictionary, args.emsize)
+    import custom_embedder_recurrent
+    embedder = custom_embedder_recurrent.CustomEmbedder(corpus.dictionary, args.emsize)
 model = model.RNNModel(embedder,
                        args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.dropouth, args.dropouti, args.dropoute, args.wdrop, tie_weights = not args.no_tied)
 ###
@@ -228,7 +229,8 @@ def evaluate(data_source, batch_size=10, valid_or_test = "valid"):
         output, hidden = model(data, hidden)
         loss = len(data) * criterion(model.decoder.weight, model.decoder.bias, output, targets).item()
         total_loss += loss
-        total_embedding_loss += len(data) * float(embedder.last_batch_loss().cpu().detach().item())
+        if args.embedder == "letter":
+            total_embedding_loss += len(data) * float(embedder.last_batch_loss().cpu().detach().item())
 
         hidden = repackage_hidden(hidden)
 
@@ -309,11 +311,12 @@ def train(epoch):
 
         writer.add_scalar('Loss/train/main', raw_loss / math.log(2))
 
-        embedder_loss = embedder.last_batch_loss()
-
-        writer.add_scalar('Loss/train/embedder', embedder_loss / math.log(2))
-
-        loss += embedder_loss * args.embedder_lambda
+        if args.embedder == "letter":
+            embedder_loss = embedder.last_batch_loss()
+            writer.add_scalar('Loss/train/embedder', embedder_loss / math.log(2))
+            loss += embedder_loss * args.embedder_lambda
+        else:
+            embedder_loss = 0.0
 
         #loss = raw_loss
         # Activiation Regularization
