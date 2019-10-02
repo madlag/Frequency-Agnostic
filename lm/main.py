@@ -167,6 +167,10 @@ if args.embedder == "classic":
 elif args.embedder == "letter":
     import custom_embedder_recurrent
     embedder = custom_embedder_recurrent.CustomEmbedder(corpus.dictionary, args.emsize)
+elif args.embedder == "lstm":
+    import custom_embedder_lstm
+    embedder = custom_embedder_lstm.CustomEmbedder(corpus.dictionary, args.emsize)
+
 model = model.RNNModel(embedder,
                        args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.dropouth, args.dropouti, args.dropoute, args.wdrop, tie_weights = not args.no_tied)
 ###
