@@ -41,7 +41,12 @@ class CustomEmbedder(nn.Module):
         sequences, sequences_length = self.token_dict.get_all_sequences_tensor()
 
         self.data_set = DummyDataSet(sequences, sequences_length)
-        encoder = NetworkBasedEncoderDecoder(self.token_dict, self.embedding_size, self.data_set)
+        encoder = NetworkBasedEncoderDecoder(self.token_dict,
+                                             self.embedding_size,
+                                             self.data_set)
+                                             #layer_sizes=[100, 200])
+                                             #letter_embedding_size = 12,
+                                             #use_letter_as_input = False)
         self.encoder = device.prepare_object(encoder)
 
     def forward(self, word_ids):

@@ -204,6 +204,12 @@ total_params = sum(x.size()[0] * x.size()[1] if len(x.size()) > 1 else x.size()[
 print('Args:', args)
 print('Model total parameters:', total_params)
 
+encoder_params = list(embedder.parameters())
+embedder_params = sum(x.size()[0] * x.size()[1] if len(x.size()) > 1 else x.size()[0] for x in encoder_params if x.size())
+
+print('Embedder total parameters:', embedder_params)
+
+
 ###############################################################################
 # Training code
 ###############################################################################
@@ -226,16 +232,10 @@ def evaluate(data_source, batch_size=10, valid_or_test = "valid"):
 
         hidden = repackage_hidden(hidden)
 
-        if valid_or_test == "valid":
-            name = "valid"
-        else:
-            name = "test"
-
-
     ret = total_loss / len(data_source)
 
-    writer.add_scalar('Loss/%s/main' % name, ret / math.log(2))
-    writer.add_scalar('Loss/%s/embedder' % name, total_embedding_loss / len(data_source) / math.log(2))
+    writer.add_scalar('Loss/%s/main' % valid_or_test, ret / math.log(2))
+    writer.add_scalar('Loss/%s/embedder' % valid_or_test, total_embedding_loss / len(data_source) / math.log(2))
 
     return ret
 
@@ -351,7 +351,7 @@ def train(epoch):
 # Loop over epochs.
 lr = args.lr
 best_val_loss = []
-stored_loss = 100000000
+stored_loss = 6.859 * math.log(2) # 6.825 was the best
 finetune = False
 
 
@@ -368,7 +368,16 @@ try:
     if args.optimizer == 'sgd':
         optimizer = torch.optim.SGD(params, lr=args.lr, weight_decay=args.wdecay)
     if args.optimizer == 'adam':
-        optimizer = radam.RAdam(params, lr=args.lr, weight_decay=args.wdecay)
+        optimizer = torch.optim.Adam(params, lr=args.lr, weight_decay=args.wdecay)
+
+    epoch_start_time = time.time()
+    epoch = 0
+    val_loss2 = evaluate(val_data)
+    print('-' * 89)
+    print('| end of epoch {:3d} | time: {:5.2f}s | valid loss {:5.2f} | '
+          'valid ppl {:8.2f} | valid bpc {:8.3f}'.format(
+        epoch, (time.time() - epoch_start_time), val_loss2, math.exp(val_loss2), val_loss2 / math.log(2)))
+    print('-' * 89)
 
     print("MAX EPOCH = ", args.epochs + 1)
     for epoch in range(args.start, args.epochs+1):
@@ -438,10 +447,10 @@ try:
                    epoch, (time.time() - epoch_start_time), test_loss, math.exp(test_loss), test_loss / math.log(2)))
                 print('=' * 89)
 
-            if epoch >= 110:
+            #if epoch >= 110:
             #if args.optimizer == 'sgd' and 't0' not in optimizer.param_groups[0] and (len(best_val_loss)>args.nonmono and val_loss > min(best_val_loss[:-args.nonmono])):
-                print('Switching to ASGD')
-                optimizer = torch.optim.ASGD(model.parameters(), lr=args.lr, t0=0, lambd=0., weight_decay=args.wdecay)
+            #    print('Switching to ASGD')
+            #    optimizer = torch.optim.ASGD(model.parameters(), lr=args.lr, t0=0, lambd=0., weight_decay=args.wdecay)
 
             if epoch in args.when:
                 print('Saving model before learning rate decreased')
