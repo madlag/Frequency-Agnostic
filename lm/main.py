@@ -23,6 +23,16 @@ parser.add_argument('--embedder', type=str, default='classic',
                     help='type of embedder (classic, letter)')
 parser.add_argument('--embedder_lambda', type=float,  default=0.1,
                     help='embedder loss contribution')
+parser.add_argument('--embedder_embed_emsize', type=int,  default=400,
+                    help='embedder decoder embedding dimension')
+parser.add_argument('--embedder_disembed_emsize', type=int,  default=400,
+                    help='embedder decoder embedding dimension')
+parser.add_argument('--embedder_optimized', action='store_true',
+                    help='optimized embedder version (faster but slightly different)')
+parser.add_argument('--embedder_pkm', action='store_true',
+                    help='use a product key memory to supplement the letter embedding')
+parser.add_argument('--embedder_pkm_add', action="store_true",
+                    help='add pkm output to embedding if true, or outputs just pkm output')
 parser.add_argument('--emsize', type=int, default=400,
                     help='size of word embeddings')
 parser.add_argument('--nhid', type=int, default=1150,
@@ -165,8 +175,16 @@ ntokens = len(corpus.dictionary)
 if args.embedder == "classic":
     embedder = nn.Embedding(ntokens, args.emsize)
 elif args.embedder == "letter":
-    import custom_embedder_recurrent
-    embedder = custom_embedder_recurrent.CustomEmbedder(corpus.dictionary, args.emsize)
+    import custom_embedder_recurrent_bi
+    embedder = custom_embedder_recurrent_bi.CustomEmbedder(corpus.dictionary, args.embedder_embed_emsize,
+                                                           args.embedder_disembed_emsize, args.embedder_optimized,
+                                                           bidirectional = False,
+                                                           pkm_embedding_size = args.emsize if args.embedder_pkm else 0,
+                                                           pkm_add = args.embedder_pkm_add)
+
+elif args.embedder == "letterbi":
+    import custom_embedder_recurrent_bi
+    embedder = custom_embedder_recurrent_bi.CustomEmbedder(corpus.dictionary, args.emsize, args.embedder_disembed_emsize, args.embedder_optimized)
 elif args.embedder == "lstm":
     import custom_embedder_lstm
     embedder = custom_embedder_lstm.CustomEmbedder(corpus.dictionary, args.emsize)
@@ -233,7 +251,7 @@ def evaluate(data_source, batch_size=10, valid_or_test = "valid"):
         output, hidden = model(data, hidden)
         loss = len(data) * criterion(model.decoder.weight, model.decoder.bias, output, targets).item()
         total_loss += loss
-        if args.embedder == "letter":
+        if args.embedder != "classic":
             total_embedding_loss += len(data) * float(embedder.last_batch_loss().cpu().detach().item())
 
         hidden = repackage_hidden(hidden)
@@ -253,6 +271,7 @@ def train(epoch):
     # Turn on training mode which enables dropout.
     if args.model == 'QRNN': model.reset()
     total_loss = 0
+    embedder_total_loss = 0
     start_time = time.time()
     ntokens = len(corpus.dictionary)
     hidden = model.init_hidden(args.batch_size)
@@ -313,11 +332,8 @@ def train(epoch):
         else:
             loss = raw_loss
 
-        writer.add_scalar('Loss/train/main', raw_loss / math.log(2))
-
-        if args.embedder == "letter":
+        if args.embedder != "classic":
             embedder_loss = embedder.last_batch_loss()
-            writer.add_scalar('Loss/train/embedder', embedder_loss / math.log(2))
             loss += embedder_loss * args.embedder_lambda
         else:
             embedder_loss = 0.0
@@ -334,6 +350,8 @@ def train(epoch):
         optimizer.step()
 
         total_loss += raw_loss.data
+        embedder_total_loss += embedder_loss
+
         optimizer.param_groups[0]['lr'] = lr2
         if batch % args.log_interval == 0 and batch > 0:
             cur_loss = total_loss.item() / args.log_interval
@@ -342,8 +360,16 @@ def train(epoch):
                     'loss {:5.2f} | ppl {:8.2f} | bpc {:8.3f} | embed_loss {:8.3f}'.format(
                 epoch, batch, len(train_data) // args.bptt, optimizer.param_groups[0]['lr'],
                 elapsed * 1000 / args.log_interval, cur_loss, math.exp(cur_loss), cur_loss / math.log(2), embedder_loss / math.log(2)))
+
+            writer.add_scalar('Loss/train/main', cur_loss / math.log(2))
+            if args.embedder != "classic":
+                writer.add_scalar('Loss/train/embedder', embedder_total_loss / args.log_interval / math.log(2))
+
             total_loss = 0
+            embedder_total_loss = 0
             start_time = time.time()
+
+
         ###
         batch += 1
         i += seq_len
@@ -358,7 +384,7 @@ def train(epoch):
 # Loop over epochs.
 lr = args.lr
 best_val_loss = []
-stored_loss = 6.859 * math.log(2) # 6.825 was the best
+stored_loss = 10000 * math.log(2) # 6.825 was the best
 finetune = False
 
 
@@ -374,8 +400,13 @@ try:
     # Ensure the optimizer is optimizing params, which includes both the model's weights as well as the criterion's weight (i.e. Adaptive Softmax)
     if args.optimizer == 'sgd':
         optimizer = torch.optim.SGD(params, lr=args.lr, weight_decay=args.wdecay)
-    if args.optimizer == 'adam':
+    elif args.optimizer == 'adam':
         optimizer = torch.optim.Adam(params, lr=args.lr, weight_decay=args.wdecay)
+    elif args.optimizer == 'radam':
+        optimizer = radam.RAdam(params, lr=args.lr, weight_decay=args.wdecay)
+    else:
+        raise Exception("Bad value %s for optimizer type" % args.optimizer)
+
 
     epoch_start_time = time.time()
     epoch = 0
